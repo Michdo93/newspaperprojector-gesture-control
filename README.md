@@ -1,5 +1,5 @@
 # newspaperprojector-gesture-control
-Gesture control for the newspaperprojector using an Xbox Kinect camera and a Raspberry Pi.
+Gesture control for the [newspaperprojector](https://github.com/Michdo93/newspaperprojector) using an Xbox Kinect camera and a Raspberry Pi.
 
 ## Installation on the Raspberry Pi 3B+
 
