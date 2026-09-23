@@ -104,3 +104,24 @@ sudo systemctl status kinect-publisher
 > **Important Note: Pi 3B+ and Kinect v2**
 > The **Pi 3B+ only has USB 2.0** — the Kinect v2 absolutely requires USB 3.0 for the depth image bandwidth. With USB 2.0, it either doesn't run stably or doesn't work at all. **The Kinect v1 is the right choice for the Pi 3B+.**
 
+## Usage
+
+| Swipe Direction | MQTT Topic | Message Payload | Gesture Description | Control Description |
+| --- | --- | --- | --- | --- |
+| **Swipe Right** | `projector/command/gesture` | `PAGE_NEXT` | Triggered when the hand moves horizontally to the right across the camera frame. | Go to the next article in the daily newspaper. |
+| **Swipe Left** | `projector/command/gesture` | `PAGE_PREV` | Triggered when the hand moves horizontally to the left across the camera frame. | Go to the previous article in the daily newspaper. |
+| **Swipe Up** | `projector/command/gesture` | `SCROLL_UP` | Triggered when raising the hand towards the top-down camera (depth distance decreases). | Scroll up on the daily newspaper's website. |
+| **Swipe Down** | `projector/command/gesture` | `SCROLL_DOWN` | Triggered when lowering the hand away from the top-down camera (depth distance increases). | Scroll down on the daily newspaper's website. |
+
+
+
+
+
+
+
+
+
+
+
+
+
