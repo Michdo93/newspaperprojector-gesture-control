@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Kinect v1 (Xbox 360) Gestensteuerung
-Kamera zeigt von oben nach unten
-Läuft auf Raspberry Pi 3B+
-Sendet Gesten per MQTT an BeagleBone Black
+Kinect v1 (Xbox 360) Gesture Control
+Camera faces top-down
+Runs on Raspberry Pi 3B+
+Sends gestures via MQTT to BeagleBone Black
 """
 
 import freenect
@@ -18,138 +18,138 @@ logging.basicConfig(
 )
 log = logging.getLogger("kinect_v1")
 
-# ── Konfiguration ──────────────────────────────────────────────
-BROKER  = "192.168.2.XX"   # IP des BBB oder MQTT-Brokers anpassen
+# ── Configuration ─────────────────────────────────────────────
+BROKER  = "192.168.0.5"   # Set IP of BBB or MQTT broker
 PORT    = 1883
-TOPIC   = "projektor/geste"
+TOPIC   = "projector/command/gesture"
 
-# Mindestbewegung in Pixeln um eine Geste auszulösen
-SCHWELLE_WISCHEN   = 40    # px für links/rechts/hoch/runter
-SCHWELLE_TIEFE     = 80    # mm Änderung für hoch/runter (Kamera von oben)
+# Minimum motion in pixels to trigger a gesture
+SWIPE_THRESHOLD   = 40    # px for left/right/up/down
+DEPTH_THRESHOLD   = 80    # mm change for up/down (top-down camera)
 
-# Cooldown zwischen zwei Gesten (Sekunden)
+# Cooldown between two gestures (seconds)
 COOLDOWN = 1.2
 
-# Tiefenbereich in dem die Hand erkannt wird (mm)
-TIEFE_MIN = 400   # näher als 40cm ignorieren
-TIEFE_MAX = 1500  # weiter als 150cm ignorieren
+# Depth range in which the hand is detected (mm)
+DEPTH_MIN = 400   # ignore closer than 40cm
+DEPTH_MAX = 1500  # ignore further than 150cm
 # ──────────────────────────────────────────────────────────────
 
 mqtt_client = mqtt.Client()
 mqtt_client.connect(BROKER, PORT, 60)
 mqtt_client.loop_start()
 
-letzte_geste_zeit = 0
-letzte_hand_x     = None
-letzte_hand_y     = None
-letzte_hand_tiefe = None  # Durchschnittstiefe der Hand
+last_gesture_time = 0
+last_hand_x       = None
+last_hand_y       = None
+last_hand_depth   = None  # Average depth of the hand
 
-def sende_geste(geste: str):
-    global letzte_geste_zeit
-    jetzt = time.time()
-    if jetzt - letzte_geste_zeit < COOLDOWN:
+def send_gesture(gesture: str):
+    global last_gesture_time
+    now = time.time()
+    if now - last_gesture_time < COOLDOWN:
         return
-    letzte_geste_zeit = jetzt
-    mqtt_client.publish(TOPIC, geste)
-    log.info(f"Geste gesendet: {geste}")
+    last_gesture_time = now
+    mqtt_client.publish(TOPIC, gesture)
+    log.info(f"Gesture sent: {gesture}")
 
-def finde_hand(tiefenbild: np.ndarray):
+def find_hand(depth_image: np.ndarray):
     """
-    Kamera zeigt nach unten → Hand die sich hebt = kleinerer Tiefenwert.
-    Findet das nächste Objekt im definierten Tiefenbereich.
-    Gibt (y, x, mittlere_tiefe) zurück oder None.
+    Camera points downward → Hand raised = smaller depth value.
+    Finds the closest object within the defined depth range.
+    Returns (y, x, mean_depth) or None.
     """
-    bild = tiefenbild.astype(np.float32)
+    img = depth_image.astype(np.float32)
 
-    # Nur Objekte im sinnvollen Tiefenbereich
-    maske = (bild > TIEFE_MIN) & (bild < TIEFE_MAX)
-    if not np.any(maske):
+    # Only objects within a valid depth range
+    mask = (img > DEPTH_MIN) & (img < DEPTH_MAX)
+    if not np.any(mask):
         return None
 
-    # Nächsten Punkt finden (kleinster Tiefenwert = nächste Hand)
-    bild_gefiltert = np.where(maske, bild, 9999)
-    min_pos = np.unravel_index(np.argmin(bild_gefiltert), bild.shape)
+    # Find the closest point (smallest depth value = closest hand)
+    filtered_img = np.where(mask, img, 9999)
+    min_pos = np.unravel_index(np.argmin(filtered_img), img.shape)
 
-    # Region um den nächsten Punkt für stabilere Messung
+    # Region around the closest point for more stable measurement
     y, x = min_pos
-    h, w = bild.shape
-    y0, y1 = max(0, y-20), min(h, y+20)
-    x0, x1 = max(0, x-20), min(w, x+20)
-    region = bild[y0:y1, x0:x1]
-    region_maske = (region > TIEFE_MIN) & (region < TIEFE_MAX)
+    h, w = img.shape
+    y0, y1 = max(0, y - 20), min(h, y + 20)
+    x0, x1 = max(0, x - 20), min(w, x + 20)
+    region = img[y0:y1, x0:x1]
+    region_mask = (region > DEPTH_MIN) & (region < DEPTH_MAX)
 
-    if not np.any(region_maske):
+    if not np.any(region_mask):
         return None
 
-    mittlere_tiefe = float(np.mean(region[region_maske]))
-    return (int(y), int(x), mittlere_tiefe)
+    mean_depth = float(np.mean(region[region_mask]))
+    return (int(y), int(x), mean_depth)
 
-def verarbeite_tiefenbild(tiefe, _timestamp):
-    global letzte_hand_x, letzte_hand_y, letzte_hand_tiefe
+def process_depth_image(depth, _timestamp):
+    global last_hand_x, last_hand_y, last_hand_depth
 
-    ergebnis = finde_hand(tiefe)
+    result = find_hand(depth)
 
-    if ergebnis is None:
-        # Hand nicht sichtbar — Zustand zurücksetzen
-        letzte_hand_x     = None
-        letzte_hand_y     = None
-        letzte_hand_tiefe = None
+    if result is None:
+        # Hand not visible — reset state
+        last_hand_x     = None
+        last_hand_y     = None
+        last_hand_depth = None
         return
 
-    hand_y, hand_x, hand_tiefe = ergebnis
+    hand_y, hand_x, hand_depth = result
 
-    if letzte_hand_x is None:
-        # Ersten Frame initialisieren
-        letzte_hand_x     = hand_x
-        letzte_hand_y     = hand_y
-        letzte_hand_tiefe = hand_tiefe
+    if last_hand_x is None:
+        # Initialize first frame
+        last_hand_x     = hand_x
+        last_hand_y     = hand_y
+        last_hand_depth = hand_depth
         return
 
-    delta_x     = hand_x     - letzte_hand_x
-    delta_y     = hand_y     - letzte_hand_y
-    delta_tiefe = hand_tiefe - letzte_hand_tiefe
+    delta_x     = hand_x     - last_hand_x
+    delta_y     = hand_y     - last_hand_y
+    delta_depth = hand_depth - last_hand_depth
 
     abs_x     = abs(delta_x)
     abs_y     = abs(delta_y)
-    abs_tiefe = abs(delta_tiefe)
+    abs_depth = abs(delta_depth)
 
-    # Kamera zeigt nach UNTEN:
-    # Hand hebt sich → Tiefenwert KLEINER (näher zur Kamera) → HOCH
-    # Hand senkt sich → Tiefenwert GRÖSSER (weiter von Kamera) → RUNTER
+    # Camera points DOWNWARD:
+    # Hand raises  → depth value SMALLER (closer to camera) → UP
+    # Hand lowers → depth value LARGER  (further from camera) → DOWN
 
-    if abs_tiefe > SCHWELLE_TIEFE and abs_tiefe > abs_x and abs_tiefe > abs_y:
-        # Vertikale Geste (hoch/runter) dominiert
-        if delta_tiefe < -SCHWELLE_TIEFE:
-            sende_geste("ArrowUp")      # Hand hebt sich
-        elif delta_tiefe > SCHWELLE_TIEFE:
-            sende_geste("ArrowDown")    # Hand senkt sich
+    if abs_depth > DEPTH_THRESHOLD and abs_depth > abs_x and abs_depth > abs_y:
+        # Vertical gesture (up/down) dominates
+        if delta_depth < -DEPTH_THRESHOLD:
+            send_gesture("ArrowUp")      # Hand raised
+        elif delta_depth > DEPTH_THRESHOLD:
+            send_gesture("ArrowDown")    # Hand lowered
 
-    elif abs_x > SCHWELLE_WISCHEN and abs_x > abs_y:
-        # Horizontale Geste (links/rechts) dominiert
-        if delta_x > SCHWELLE_WISCHEN:
-            sende_geste("ArrowRight")   # Hand nach rechts
-        elif delta_x < -SCHWELLE_WISCHEN:
-            sende_geste("ArrowLeft")    # Hand nach links
+    elif abs_x > SWIPE_THRESHOLD and abs_x > abs_y:
+        # Horizontal gesture (left/right) dominates
+        if delta_x > SWIPE_THRESHOLD:
+            send_gesture("ArrowRight")   # Hand to the right
+        elif delta_x < -SWIPE_THRESHOLD:
+            send_gesture("ArrowLeft")    # Hand to the left
 
-    elif abs_y > SCHWELLE_WISCHEN and abs_y > abs_x:
-        # Tiefenrichtung (vorne/hinten aus Kamera-Sicht)
-        # Optional: als Scroll verwenden
+    elif abs_y > SWIPE_THRESHOLD and abs_y > abs_x:
+        # Depth axis direction (front/back from camera perspective)
+        # Optional: use for scrolling
         pass
 
-    # Aktuelle Position merken
-    letzte_hand_x     = hand_x
-    letzte_hand_y     = hand_y
-    letzte_hand_tiefe = hand_tiefe
+    # Save current position
+    last_hand_x     = hand_x
+    last_hand_y     = hand_y
+    last_hand_depth = hand_depth
 
-log.info(f"Kinect v1 Publisher startet — Broker: {BROKER}:{PORT}")
-log.info("Kamera-Ausrichtung: von oben nach unten")
-log.info("Gesten: Hand heben=Hoch, Hand senken=Runter, links/rechts=Artikel")
-log.info("Strg+C zum Beenden")
+log.info(f"Kinect v1 Publisher starting — Broker: {BROKER}:{PORT}")
+log.info("Camera orientation: top-down")
+log.info("Gestures: Raise hand=Up, Lower hand=Down, Left/Right=Item navigation")
+log.info("Ctrl+C to terminate")
 
 try:
-    freenect.runloop(depth=verarbeite_tiefenbild)
+    freenect.runloop(depth=process_depth_image)
 except KeyboardInterrupt:
-    log.info("Beendet.")
+    log.info("Terminated.")
 finally:
     mqtt_client.loop_stop()
     mqtt_client.disconnect()
