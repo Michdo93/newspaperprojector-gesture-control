@@ -120,16 +120,16 @@ def process_depth_image(depth, _timestamp):
     if abs_depth > DEPTH_THRESHOLD and abs_depth > abs_x and abs_depth > abs_y:
         # Vertical gesture (up/down) dominates
         if delta_depth < -DEPTH_THRESHOLD:
-            send_gesture("ArrowUp")      # Hand raised
+            send_gesture("SCROLL_UP")      # Hand raised
         elif delta_depth > DEPTH_THRESHOLD:
-            send_gesture("ArrowDown")    # Hand lowered
+            send_gesture("SCROLL_DOWN")    # Hand lowered
 
     elif abs_x > SWIPE_THRESHOLD and abs_x > abs_y:
         # Horizontal gesture (left/right) dominates
         if delta_x > SWIPE_THRESHOLD:
-            send_gesture("ArrowRight")   # Hand to the right
+            send_gesture("PAGE_NEXT")   # Hand to the right
         elif delta_x < -SWIPE_THRESHOLD:
-            send_gesture("ArrowLeft")    # Hand to the left
+            send_gesture("PAGE_PREV")    # Hand to the left
 
     elif abs_y > SWIPE_THRESHOLD and abs_y > abs_x:
         # Depth axis direction (front/back from camera perspective)
