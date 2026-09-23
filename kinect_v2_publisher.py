@@ -115,14 +115,14 @@ def process_frame(depth_image: np.ndarray):
 
     if abs_depth > DEPTH_THRESHOLD and abs_depth > abs_x and abs_depth > abs_y:
         if delta_depth < -DEPTH_THRESHOLD:
-            send_gesture("ArrowUp")
+            send_gesture("SCROLL_UP")
         elif delta_depth > DEPTH_THRESHOLD:
-            send_gesture("ArrowDown")
+            send_gesture("SCROLL_DOWN")
     elif abs_x > SWIPE_THRESHOLD and abs_x > abs_y:
         if delta_x > SWIPE_THRESHOLD:
-            send_gesture("ArrowRight")
+            send_gesture("PAGE_NEXT")
         elif delta_x < -SWIPE_THRESHOLD:
-            send_gesture("ArrowLeft")
+            send_gesture("PAGE_PREV")
 
     last_hand_x     = hand_x
     last_hand_y     = hand_y
