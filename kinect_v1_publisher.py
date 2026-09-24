@@ -84,7 +84,7 @@ def find_hand(depth_image: np.ndarray):
     mean_depth = float(np.mean(region[region_mask]))
     return (int(y), int(x), mean_depth)
 
-def process_depth_image(depth, _timestamp):
+def process_depth_image(dev, depth, _timestamp):
     global last_hand_x, last_hand_y, last_hand_depth
 
     result = find_hand(depth)
