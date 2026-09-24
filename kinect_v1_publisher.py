@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """
-Kinect v1 (Xbox 360) Gesture Control
-Camera faces top-down
-Runs on Raspberry Pi 3B+
-Sends gestures via MQTT to BeagleBone Black
+Kinect v1 (Xbox 360) Gesture Publisher
+Camera mounted top-down, pointing at the floor.
+Detects hand gestures and publishes MQTT commands to the Newspaper Projector.
+
+Gestures:
+  Swipe right  → PAGE_NEXT
+  Swipe left   → PAGE_PREV
+  Raise hand   → SCROLL_UP
+  Lower hand   → SCROLL_DOWN
 """
 
 import freenect
@@ -18,93 +23,119 @@ logging.basicConfig(
 )
 log = logging.getLogger("kinect_v1")
 
-# ── Configuration ─────────────────────────────────────────────
-BROKER  = "192.168.0.5"   # Set IP of BBB or MQTT broker
-PORT    = 1883
-TOPIC   = "projector/command/gesture"
+# ── Configuration ──────────────────────────────────────────────────────────────
+BROKER = "192.168.0.5"          # IP address of the MQTT broker
+PORT   = 1883
+TOPIC  = "projector/command/gesture"
 
-# Minimum motion in pixels to trigger a gesture
-SWIPE_THRESHOLD   = 40    # px for left/right/up/down
-DEPTH_THRESHOLD   = 80    # mm change for up/down (top-down camera)
+# Minimum pixel displacement to trigger a horizontal swipe gesture
+SWIPE_THRESHOLD = 40            # pixels
 
-# Cooldown between two gestures (seconds)
-COOLDOWN = 1.2
+# Minimum depth change (mm) to trigger a vertical gesture
+DEPTH_THRESHOLD = 80            # millimetres
 
-# Depth range in which the hand is detected (mm)
-DEPTH_MIN = 400   # ignore closer than 40cm
-DEPTH_MAX = 1500  # ignore further than 150cm
-# ──────────────────────────────────────────────────────────────
+# Minimum seconds between two gestures (prevents rapid repeat firing)
+COOLDOWN = 1.2                  # seconds
 
-mqtt_client = mqtt.Client()
+# Only detect objects within this depth range (mm from camera)
+DEPTH_MIN = 400                 # 40 cm  — ignore objects too close
+DEPTH_MAX = 1500                # 150 cm — ignore objects too far
+
+# Minimum connected pixels required to consider a detection valid
+# Filters out floor reflections and sensor noise
+MIN_HAND_PIXELS = 50
+# ──────────────────────────────────────────────────────────────────────────────
+
+mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 mqtt_client.connect(BROKER, PORT, 60)
 mqtt_client.loop_start()
 
-last_gesture_time = 0
+last_gesture_time = 0.0
 last_hand_x       = None
 last_hand_y       = None
-last_hand_depth   = None  # Average depth of the hand
+last_hand_depth   = None
 
-def send_gesture(gesture: str):
+
+def publish_gesture(gesture: str) -> None:
+    """Publish a gesture command via MQTT, subject to cooldown."""
     global last_gesture_time
     now = time.time()
     if now - last_gesture_time < COOLDOWN:
         return
     last_gesture_time = now
     mqtt_client.publish(TOPIC, gesture)
-    log.info(f"Gesture sent: {gesture}")
+    log.info(f"Published: {gesture}")
 
-def find_hand(depth_image: np.ndarray):
-    """
-    Camera points downward → Hand raised = smaller depth value.
-    Finds the closest object within the defined depth range.
-    Returns (y, x, mean_depth) or None.
-    """
-    img = depth_image.astype(np.float32)
 
-    # Only objects within a valid depth range
-    mask = (img > DEPTH_MIN) & (img < DEPTH_MAX)
-    if not np.any(mask):
+def detect_hand(depth_frame: np.ndarray):
+    """
+    Locate the closest hand-sized object in the depth frame.
+
+    With the camera mounted top-down:
+      - A raised hand produces a SMALLER depth value (closer to camera).
+      - A lowered hand produces a LARGER depth value (further from camera).
+
+    Returns (y, x, mean_depth) if a valid hand region is found, else None.
+    """
+    img = depth_frame.astype(np.float32)
+
+    # Isolate pixels within the valid depth range
+    valid_mask = (img > DEPTH_MIN) & (img < DEPTH_MAX)
+    if not np.any(valid_mask):
         return None
 
-    # Find the closest point (smallest depth value = closest hand)
-    filtered_img = np.where(mask, img, 9999)
-    min_pos = np.unravel_index(np.argmin(filtered_img), img.shape)
+    # Reject detections that are too small (noise, reflections)
+    if np.sum(valid_mask) < MIN_HAND_PIXELS:
+        return None
 
-    # Region around the closest point for more stable measurement
-    y, x = min_pos
+    # Find the pixel with the smallest depth value (closest point)
+    search_img = np.where(valid_mask, img, 9999.0)
+    min_pos    = np.unravel_index(np.argmin(search_img), img.shape)
+    y, x       = min_pos
+
+    # Sample a small region around the closest point for a stable depth estimate
     h, w = img.shape
     y0, y1 = max(0, y - 20), min(h, y + 20)
     x0, x1 = max(0, x - 20), min(w, x + 20)
-    region = img[y0:y1, x0:x1]
+    region      = img[y0:y1, x0:x1]
     region_mask = (region > DEPTH_MIN) & (region < DEPTH_MAX)
 
     if not np.any(region_mask):
         return None
 
+    if np.sum(region_mask) < MIN_HAND_PIXELS:
+        return None
+
     mean_depth = float(np.mean(region[region_mask]))
     return (int(y), int(x), mean_depth)
 
-def process_depth_image(dev, depth, _timestamp):
+
+def process_depth_frame(dev, depth, timestamp) -> None:
+    """
+    Freenect depth callback.
+    Called for every incoming depth frame from the Kinect sensor.
+    """
     global last_hand_x, last_hand_y, last_hand_depth
 
-    result = find_hand(depth)
+    detection = detect_hand(depth)
 
-    if result is None:
-        # Hand not visible — reset state
+    if detection is None:
+        # No hand detected — clear stored position, publish nothing
         last_hand_x     = None
         last_hand_y     = None
         last_hand_depth = None
         return
 
-    hand_y, hand_x, hand_depth = result
+    hand_y, hand_x, hand_depth = detection
 
     if last_hand_x is None:
-        # Initialize first frame
+        # First frame with a valid detection — store position, do not gesture yet
         last_hand_x     = hand_x
         last_hand_y     = hand_y
         last_hand_depth = hand_depth
         return
 
+    # Calculate displacement since the last frame
     delta_x     = hand_x     - last_hand_x
     delta_y     = hand_y     - last_hand_y
     delta_depth = hand_depth - last_hand_depth
@@ -113,43 +144,42 @@ def process_depth_image(dev, depth, _timestamp):
     abs_y     = abs(delta_y)
     abs_depth = abs(delta_depth)
 
-    # Camera points DOWNWARD:
-    # Hand raises  → depth value SMALLER (closer to camera) → UP
-    # Hand lowers → depth value LARGER  (further from camera) → DOWN
-
+    # Determine the dominant axis and fire the appropriate gesture
     if abs_depth > DEPTH_THRESHOLD and abs_depth > abs_x and abs_depth > abs_y:
-        # Vertical gesture (up/down) dominates
+        # Vertical axis (depth) dominates
         if delta_depth < -DEPTH_THRESHOLD:
-            send_gesture("SCROLL_UP")      # Hand raised
+            publish_gesture("SCROLL_UP")    # Hand moved toward camera (raised)
         elif delta_depth > DEPTH_THRESHOLD:
-            send_gesture("SCROLL_DOWN")    # Hand lowered
+            publish_gesture("SCROLL_DOWN")  # Hand moved away from camera (lowered)
 
     elif abs_x > SWIPE_THRESHOLD and abs_x > abs_y:
-        # Horizontal gesture (left/right) dominates
+        # Horizontal axis dominates
         if delta_x > SWIPE_THRESHOLD:
-            send_gesture("PAGE_NEXT")   # Hand to the right
+            publish_gesture("PAGE_NEXT")    # Hand swiped right
         elif delta_x < -SWIPE_THRESHOLD:
-            send_gesture("PAGE_PREV")    # Hand to the left
+            publish_gesture("PAGE_PREV")    # Hand swiped left
 
-    elif abs_y > SWIPE_THRESHOLD and abs_y > abs_x:
-        # Depth axis direction (front/back from camera perspective)
-        # Optional: use for scrolling
-        pass
-
-    # Save current position
+    # Update stored position
     last_hand_x     = hand_x
     last_hand_y     = hand_y
     last_hand_depth = hand_depth
 
-log.info(f"Kinect v1 Publisher starting — Broker: {BROKER}:{PORT}")
+
+# ── Entry point ────────────────────────────────────────────────────────────────
+log.info(f"Kinect v1 Publisher starting — Broker: {BROKER}:{PORT}, Topic: {TOPIC}")
 log.info("Camera orientation: top-down")
-log.info("Gestures: Raise hand=Up, Lower hand=Down, Left/Right=Item navigation")
-log.info("Ctrl+C to terminate")
+log.info("Swipe right=PAGE_NEXT | Swipe left=PAGE_PREV | Raise=SCROLL_UP | Lower=SCROLL_DOWN")
+log.info("Press Ctrl+C to stop")
 
 try:
-    freenect.runloop(depth=process_depth_image)
+    freenect.runloop(depth=process_depth_frame)
 except KeyboardInterrupt:
-    log.info("Terminated.")
+    log.info("Stopped by user.")
+except Exception as e:
+    log.error(f"Unexpected error: {e}")
 finally:
-    mqtt_client.loop_stop()
-    mqtt_client.disconnect()
+    try:
+        mqtt_client.loop_stop()
+        mqtt_client.disconnect()
+    except Exception:
+        pass
