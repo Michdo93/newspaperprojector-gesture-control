@@ -31,8 +31,14 @@ sudo nano /etc/udev/rules.d/51-kinect.rules
 Content of the udev rule:
 
 ```
+# Kinect v1 - NUI Motor
+SUBSYSTEM=="usb", ATTR{idVendor}=="045e", ATTR{idProduct}=="02c2", MODE="0666"
+
+# Kinect v1 - NUI Audio
+SUBSYSTEM=="usb", ATTR{idVendor}=="045e", ATTR{idProduct}=="02ad", MODE="0666"
+
+# Kinect v1 - NUI Camera (Tiefensensor)
 SUBSYSTEM=="usb", ATTR{idVendor}=="045e", ATTR{idProduct}=="02ae", MODE="0666"
-SUBSYSTEM=="usb", ATTR{idVendor}=="045e", ATTR{idProduct}=="02bf", MODE="0666"
 ```
 
 ```
