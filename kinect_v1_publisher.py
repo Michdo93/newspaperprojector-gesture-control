@@ -12,19 +12,22 @@ Gestures:
 """
 
 import os
-import ctypes
+import sys
 import freenect
 import numpy as np
 import paho.mqtt.client as mqtt
 import time
 import logging
 
-# Suppress libfreenect and libusb log output below ERROR level
-os.environ["LIBUSB_DEBUG"] = "0"
+# Redirect stderr to /dev/null to suppress libfreenect and libusb messages
+# (e.g. "Could not open audio: -4", "Tried to set depth mode while stream is active")
+_devnull = open(os.devnull, 'w')
+os.dup2(_devnull.fileno(), sys.stderr.fileno())
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s %(levelname)s %(message)s'
+    format='%(asctime)s %(levelname)s %(message)s',
+    stream=sys.stdout
 )
 log = logging.getLogger("kinect_v1")
 
@@ -33,22 +36,12 @@ BROKER = "192.168.0.5"          # IP address of the MQTT broker
 PORT   = 1883
 TOPIC  = "projector/command/gesture"
 
-# Minimum pixel displacement to trigger a horizontal swipe gesture
-SWIPE_THRESHOLD = 40            # pixels
-
-# Minimum depth change (mm) to trigger a vertical gesture
-DEPTH_THRESHOLD = 80            # millimetres
-
-# Minimum seconds between two gestures (prevents rapid repeat firing)
-COOLDOWN = 1.2                  # seconds
-
-# Only detect objects within this depth range (mm from camera)
-DEPTH_MIN = 400                 # 40 cm  — ignore objects too close
-DEPTH_MAX = 1500                # 150 cm — ignore objects too far
-
-# Minimum connected pixels required to consider a detection valid
-# Filters out floor reflections and sensor noise
-MIN_HAND_PIXELS = 50
+SWIPE_THRESHOLD = 40            # pixels — minimum horizontal displacement
+DEPTH_THRESHOLD = 80            # mm — minimum depth change for vertical gesture
+COOLDOWN        = 1.2           # seconds between gestures
+DEPTH_MIN       = 400           # mm — ignore objects closer than this
+DEPTH_MAX       = 1500          # mm — ignore objects further than this
+MIN_HAND_PIXELS = 50            # minimum pixels for a valid detection
 # ──────────────────────────────────────────────────────────────────────────────
 
 mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
@@ -59,6 +52,7 @@ last_gesture_time = 0.0
 last_hand_x       = None
 last_hand_y       = None
 last_hand_depth   = None
+depth_stream_started = False
 
 
 def publish_gesture(gesture: str) -> None:
@@ -84,21 +78,17 @@ def detect_hand(depth_frame: np.ndarray):
     """
     img = depth_frame.astype(np.float32)
 
-    # Isolate pixels within the valid depth range
     valid_mask = (img > DEPTH_MIN) & (img < DEPTH_MAX)
     if not np.any(valid_mask):
         return None
 
-    # Reject detections that are too small (noise, reflections)
     if np.sum(valid_mask) < MIN_HAND_PIXELS:
         return None
 
-    # Find the pixel with the smallest depth value (closest point)
     search_img = np.where(valid_mask, img, 9999.0)
     min_pos    = np.unravel_index(np.argmin(search_img), img.shape)
     y, x       = min_pos
 
-    # Sample a small region around the closest point for a stable depth estimate
     h, w = img.shape
     y0, y1 = max(0, y - 20), min(h, y + 20)
     x0, x1 = max(0, x - 20), min(w, x + 20)
@@ -116,16 +106,12 @@ def detect_hand(depth_frame: np.ndarray):
 
 
 def process_depth_frame(dev, depth, timestamp) -> None:
-    """
-    Freenect depth callback.
-    Called for every incoming depth frame from the Kinect sensor.
-    """
+    """Freenect depth callback — called for every incoming depth frame."""
     global last_hand_x, last_hand_y, last_hand_depth
 
     detection = detect_hand(depth)
 
     if detection is None:
-        # No hand detected — clear stored position, publish nothing
         last_hand_x     = None
         last_hand_y     = None
         last_hand_depth = None
@@ -134,13 +120,11 @@ def process_depth_frame(dev, depth, timestamp) -> None:
     hand_y, hand_x, hand_depth = detection
 
     if last_hand_x is None:
-        # First frame with a valid detection — store position, do not gesture yet
         last_hand_x     = hand_x
         last_hand_y     = hand_y
         last_hand_depth = hand_depth
         return
 
-    # Calculate displacement since the last frame
     delta_x     = hand_x     - last_hand_x
     delta_y     = hand_y     - last_hand_y
     delta_depth = hand_depth - last_hand_depth
@@ -149,22 +133,18 @@ def process_depth_frame(dev, depth, timestamp) -> None:
     abs_y     = abs(delta_y)
     abs_depth = abs(delta_depth)
 
-    # Determine the dominant axis and fire the appropriate gesture
     if abs_depth > DEPTH_THRESHOLD and abs_depth > abs_x and abs_depth > abs_y:
-        # Vertical axis (depth) dominates
         if delta_depth < -DEPTH_THRESHOLD:
-            publish_gesture("SCROLL_UP")    # Hand moved toward camera (raised)
+            publish_gesture("SCROLL_UP")
         elif delta_depth > DEPTH_THRESHOLD:
-            publish_gesture("SCROLL_DOWN")  # Hand moved away from camera (lowered)
+            publish_gesture("SCROLL_DOWN")
 
     elif abs_x > SWIPE_THRESHOLD and abs_x > abs_y:
-        # Horizontal axis dominates
         if delta_x > SWIPE_THRESHOLD:
-            publish_gesture("PAGE_NEXT")    # Hand swiped right
+            publish_gesture("PAGE_NEXT")
         elif delta_x < -SWIPE_THRESHOLD:
-            publish_gesture("PAGE_PREV")    # Hand swiped left
+            publish_gesture("PAGE_PREV")
 
-    # Update stored position
     last_hand_x     = hand_x
     last_hand_y     = hand_y
     last_hand_depth = hand_depth
@@ -172,21 +152,22 @@ def process_depth_frame(dev, depth, timestamp) -> None:
 
 def setup_device(dev, ctx) -> None:
     """
-    Device body callback — runs once per device on startup.
-    Explicitly disables the audio stream to suppress USB bandwidth warnings.
-    Only depth mode is activated; RGB and audio are left off.
+    Device body callback — runs once on startup.
+    Only activates the depth stream; audio and RGB are left off.
     """
-    freenect.set_depth_mode(dev, freenect.RESOLUTION_MEDIUM, freenect.DEPTH_11BIT)
-    freenect.set_depth_callback(dev, process_depth_frame)
-    freenect.start_depth(dev)
-    log.info("Depth stream started, audio stream disabled.")
+    global depth_stream_started
+    if not depth_stream_started:
+        freenect.set_depth_mode(dev, freenect.RESOLUTION_MEDIUM, freenect.DEPTH_11BIT)
+        freenect.set_depth_callback(dev, process_depth_frame)
+        freenect.start_depth(dev)
+        depth_stream_started = True
+        log.info("Depth stream active.")
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
-log.info(f"Kinect v1 Publisher starting — Broker: {BROKER}:{PORT}, Topic: {TOPIC}")
-log.info("Camera orientation: top-down")
-log.info("Swipe right=PAGE_NEXT | Swipe left=PAGE_PREV | Raise=SCROLL_UP | Lower=SCROLL_DOWN")
-log.info("Press Ctrl+C to stop")
+log.info(f"Broker: {BROKER}:{PORT}  Topic: {TOPIC}")
+log.info("PAGE_NEXT | PAGE_PREV | SCROLL_UP | SCROLL_DOWN")
+log.info("Press Ctrl+C to stop.")
 
 try:
     freenect.runloop(depth=process_depth_frame, body=setup_device)
