@@ -11,11 +11,16 @@ Gestures:
   Lower hand   → SCROLL_DOWN
 """
 
+import os
+import ctypes
 import freenect
 import numpy as np
 import paho.mqtt.client as mqtt
 import time
 import logging
+
+# Suppress libfreenect and libusb log output below ERROR level
+os.environ["LIBUSB_DEBUG"] = "0"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -165,6 +170,18 @@ def process_depth_frame(dev, depth, timestamp) -> None:
     last_hand_depth = hand_depth
 
 
+def setup_device(dev, ctx) -> None:
+    """
+    Device body callback — runs once per device on startup.
+    Explicitly disables the audio stream to suppress USB bandwidth warnings.
+    Only depth mode is activated; RGB and audio are left off.
+    """
+    freenect.set_depth_mode(dev, freenect.RESOLUTION_MEDIUM, freenect.DEPTH_11BIT)
+    freenect.set_depth_callback(dev, process_depth_frame)
+    freenect.start_depth(dev)
+    log.info("Depth stream started, audio stream disabled.")
+
+
 # ── Entry point ────────────────────────────────────────────────────────────────
 log.info(f"Kinect v1 Publisher starting — Broker: {BROKER}:{PORT}, Topic: {TOPIC}")
 log.info("Camera orientation: top-down")
@@ -172,7 +189,7 @@ log.info("Swipe right=PAGE_NEXT | Swipe left=PAGE_PREV | Raise=SCROLL_UP | Lower
 log.info("Press Ctrl+C to stop")
 
 try:
-    freenect.runloop(depth=process_depth_frame)
+    freenect.runloop(depth=process_depth_frame, body=setup_device)
 except KeyboardInterrupt:
     log.info("Stopped by user.")
 except Exception as e:
