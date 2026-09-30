@@ -1,0 +1,17 @@
+[Unit]
+Description=Newspaper Projector Gesture Control (Kinect v1 headless publisher)
+After=network.target mosquitto.service
+Wants=mosquitto.service
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/newspaperprojector-gesture-control
+ExecStart=/usr/bin/python3 scripts/kinect_v1_publisher.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

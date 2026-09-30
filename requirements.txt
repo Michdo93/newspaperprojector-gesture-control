@@ -1,0 +1,5 @@
+freenect
+numpy
+opencv-python
+flask
+paho-mqtt
