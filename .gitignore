@@ -1,0 +1,7 @@
+certs/
+*.crt
+templates/PAGE_PREV/*
+templates/PAGE_NEXT/*
+templates/SCROLL_DOWN/*
+templates/SCROLL_UP/*
+config/settings.py

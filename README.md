@@ -22,7 +22,7 @@ Runs on a Raspberry Pi with a Microsoft Kinect camera (v1 or v2), detects hand g
 newspaperprojector-gesture-control/
 ├── config/
 │   ├── __init__.py
-│   └── settings.py              # All configuration parameters
+│   └── settings.py.example      # All configuration parameters
 ├── scripts/
 │   ├── kinect_helper.py         # Shared hand detection + visualisation
 │   ├── dtw_matcher.py           # DTW template matching engine
@@ -109,7 +109,13 @@ cd newspaperprojector-gesture-control
 
 ## Configuration
 
-Edit `config/settings.py` to match your environment.
+At first you have to copy the `config/settings.py.example` to `config/settings.py`:
+
+```bash
+cp config/settings.py.example config/settings.py
+```
+
+Then edit `config/settings.py` to match your environment.
 
 ### MQTT — local testing (no TLS)
 
@@ -126,7 +132,7 @@ MQTT_CA_CERT  = ""
 Copy the CA certificate from the BeagleBone Black:
 
 ```bash
-scp debian@newspaperprojector.local:/etc/mosquitto/certs/ca.crt ~/
+scp debian@newspaperprojector.local:/etc/mosquitto/certs/ca.crt ~/newspaperprojector-gesture-control/certs/newspaperprojector.crt
 ```
 
 Then update `config/settings.py`:
@@ -135,7 +141,7 @@ Then update `config/settings.py`:
 MQTT_BROKER   = "192.168.x.x"        # IP of the BBB
 MQTT_USERNAME = "projector"
 MQTT_PASSWORD = "changeme"            # your Mosquitto password
-MQTT_CA_CERT  = "/home/pi/ca.crt"    # path to the copied certificate
+MQTT_CA_CERT  = "/home/pi/newspaperprojector-gesture-control/certs/newspaperprojector.crt"    # path to the copied certificate
 ```
 
 The `mqtt_helper.py` module automatically selects port 8883 and enables
