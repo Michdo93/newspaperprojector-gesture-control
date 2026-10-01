@@ -95,7 +95,7 @@ def process_depth_frame(dev, depth, timestamp) -> None:
                 gesture_sequence = []
                 gesture_arm_side = detection.arm_side
                 log.debug("Collection started.")
-            gesture_sequence.append(detection.as_feature_vector())
+            gesture_sequence.append(detection.position())
             gesture_arm_side = detection.arm_side
     else:
         stable_count = 0
